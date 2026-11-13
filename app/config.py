@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     qloo_base_url: str = os.getenv("QLOO_BASE_URL", "https://hackathon.api.qloo.com")
     qloo_enabled: bool = os.getenv("QLOO_ENABLED", "true").lower() in ("true", "1")
 
+    # Free trial allowance (one trial novel per account)
+    trial_max_episodes: int = 3
+    trial_max_words_per_episode: int = 1500
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 settings = Settings()

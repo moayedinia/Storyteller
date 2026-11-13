@@ -105,7 +105,7 @@ Ensure Python 3.10+ is installed:
 ```bash
 git clone https://github.com/moayedinia/Storyteller.git
 cd Storyteller
-pip install fastapi uvicorn pydantic google-genai openai requests
+pip install -r requirements.txt
 ```
 
 ### 2. Launch the Application
@@ -115,11 +115,52 @@ python run.py
 Open your browser and navigate to:
 👉 **`http://127.0.0.1:8000`**
 
+On the very first run an `admin` account is created. Set `STORYTELLER_ADMIN_PASSWORD` to choose its password; otherwise one is generated and written to `data/initial_admin_password.txt` (owner-readable only, and git-ignored). The password is never written to the logs — only the path is. Sign in, change the password, then delete that file.
+
 ### 3. Run the End-to-End Verification Test
 Verify the complete 6-stage pipeline and storage engine offline:
 ```bash
 python test_pipeline.py
 ```
+
+### 4. Run the Automated Tests
+The trial, usage-limit, and waitlist rules are covered by a pytest suite. It runs against a temporary SQLite database and never calls an AI provider:
+```bash
+pip install -r requirements-dev.txt
+python -m pytest tests
+```
+
+---
+
+## 🎟️ Free Trial & Upgrade Waitlist
+
+Every author account includes **one free trial**. Paid plans are not available yet, so the upgrade path is an email waitlist.
+
+**Trial rules (enforced on the server)**
+- The trial is **one novel** of up to **3 chapters**, at up to **1,500 words per chapter**, with chapter illustrations included.
+- The trial is used the moment the novel is created. Deleting the novel does not restore it.
+- After that, creating another novel, adding chapters beyond the allowance, or generating content for any other novel returns `403` with a machine-readable `detail`: `{"code": "trial_used" | "trial_limit" | "novel_locked", "message": "...", "upgrade_path": "waitlist"}`.
+- Novels that are not the account's trial novel (including novels created before this feature shipped) stay readable but cannot generate new chapters or regenerate artwork. Chapters of those novels that have no stored illustration are served locally rendered vector art instead, so they stay readable without spending model capacity; real artwork can still be generated after an upgrade.
+- Administrators, and novels owned by administrators, are not limited.
+- The same check runs inside the generation pipeline, so the background auto-continue loop stops at the allowance too.
+
+**Waitlist**
+- Signed-in authors can join at any time from the banner on the Author's Desk or **Plan & Upgrade Waitlist** in the account menu. The form is pre-filled with the account email, which can be changed.
+- One entry per account. Submitting again with the same address changes nothing; a different address replaces the stored one and keeps the original place in line.
+- Addresses are trimmed, lower-cased, and validated on the server. No email is sent on joining.
+- Authors can leave the waitlist themselves, which deletes the stored address. Deleting an account deletes its entry.
+- Entries are visible only to administrators, in **Admin Console → Upgrade Waitlist**, where an entry can also be removed.
+
+| Endpoint | Access | Purpose |
+| :--- | :--- | :--- |
+| `GET /api/trial/status` | Signed-in | Trial allowance, usage, and waitlist membership |
+| `POST /api/waitlist` | Signed-in | Join, or update the notification email (`{"email": "..."}`, optional) |
+| `GET /api/waitlist/me`, `DELETE /api/waitlist/me` | Signed-in | Read or remove your own entry |
+| `GET /api/admin/waitlist`, `DELETE /api/admin/waitlist/{id}` | Admin | List or remove entries |
+
+**Configuration** (environment variables or `.env`): `TRIAL_MAX_EPISODES` (default `3`) and `TRIAL_MAX_WORDS_PER_EPISODE` (default `1500`).
+
+**Upgrading an existing database**: nothing to run. On startup the app adds the `trial_novel_id` and `trial_started_at` columns to `users` and creates the `waitlist_entries` table. Every existing account starts with an unused trial.
 
 ---
 
@@ -169,16 +210,21 @@ storyteller/
 │   ├── storage/                        # SQLite persistence & database migrations
 │   │   ├── database.py                 # SQLite connection pool, schema definitions, and column migrations
 │   │   ├── users.py                    # User authentication, token handling, and PBKDF2 hashing
+│   │   ├── trial.py                    # Free trial entitlement and generation limits
+│   │   ├── waitlist.py                 # Upgrade waitlist entries and email validation
 │   │   └── store.py                    # Persistence for blueprints, episodes, scenes, and settings
 │   ├── api/                            # REST API endpoints
 │   │   ├── auth.py                     # Registration, login, logout, and profile management
 │   │   ├── admin.py                    # Platform analytics, user administration, and global AI config
 │   │   ├── novels.py                   # Novel CRUD, generation triggers, scenarios, and presets
+│   │   ├── trial.py                    # Trial status endpoint and upgrade-required errors
+│   │   ├── waitlist.py                 # Join, read, and leave the upgrade waitlist
 │   │   └── system.py                   # System diagnostics and connection test endpoints
 │   └── static/                         # Studio single-page application (SPA)
 │       ├── index.html                  # Responsive studio interface (Wizard, Library, Reader, Admin)
 │       ├── app.css                     # Premium typography, color palettes, and responsive layouts
 │       └── app.js                      # Frontend application controller and live progress polling
+├── tests/                              # pytest suite: trial rules, usage limits, waitlist
 ├── test_pipeline.py                    # End-to-end verification test suite
 ├── run.py                              # Server launcher
 └── README.md                           # Documentation

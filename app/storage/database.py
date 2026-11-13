@@ -149,6 +149,15 @@ class Database:
                     key TEXT PRIMARY KEY,
                     value_json TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS waitlist_entries (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+                    email TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_waitlist_created_at ON waitlist_entries(created_at);
             """)
 
             # Automatic column migration for existing user databases
@@ -164,6 +173,13 @@ class Database:
             ]:
                 try:
                     conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type} DEFAULT {default_val};")
+                except sqlite3.OperationalError:
+                    pass
+
+            # Free trial tracking. NULL trial_started_at means the account's one trial is still unused.
+            for col_name in ("trial_novel_id", "trial_started_at"):
+                try:
+                    conn.execute(f"ALTER TABLE users ADD COLUMN {col_name} TEXT;")
                 except sqlite3.OperationalError:
                     pass
 

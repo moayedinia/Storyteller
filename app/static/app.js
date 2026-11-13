@@ -12,6 +12,7 @@ let currentWizardThematicDna = [];
 let currentUser = null;
 let authToken = localStorage.getItem("st_auth_token") || null;
 let adminUsersCache = [];
+let trialStatus = null;
 
 function escapeHtml(str) {
     if (str === null || str === undefined) return "";
@@ -207,6 +208,11 @@ window.navigateTo = function navigateTo(viewName) {
             openAuthModal("login");
             return;
         }
+        if (isTrialUsed()) {
+            openWaitlistModal("Your free trial has already been used, so a new novel can't be started. Each account includes one trial novel.");
+            return;
+        }
+        applyTrialLimitsToWizard();
     }
     if (viewName === "novel" || viewName === "reader") {
         if (!currentUser) {
@@ -303,9 +309,12 @@ function setReaderTheme(themeName) {
 async function loadLibrary() {
     const grid = document.getElementById("novelsGrid");
     grid.innerHTML = `<div style="grid-column: 1/-1; text-align: center; color: var(--text-tertiary); padding: 50px;">Preparing Author's Desk…</div>`;
+    if (currentUser) await refreshTrialStatus();
     
     // If not authenticated, show guest portal prompt
     if (!currentUser) {
+        trialStatus = null;
+        renderTrialBanner();
         grid.innerHTML = `
             <div style="grid-column: 1/-1; text-align: center; padding: 56px 24px; background: var(--bg-surface); border-radius: var(--radius-lg); border: 1px solid var(--border-subtle); overflow: hidden;">
                 <div style="max-width: 640px; margin: 0 auto;">
@@ -571,7 +580,8 @@ async function submitCreateNovel() {
         }
     });
 
-    const total_episodes = parseInt(document.getElementById("wizEpisodesCount").value) || 4;
+    const total_episodes = parseInt(document.getElementById("wizEpisodesCount").value)
+        || (isOnTrialPlan() ? trialStatus.chapters_limit : 4);
     const words_per_episode = parseInt(document.getElementById("wizWordsPerEpisode").value) || 1200;
     const perspective = document.getElementById("wizPerspective").value;
     const ending = document.getElementById("wizEnding").value;
@@ -615,8 +625,19 @@ async function submitCreateNovel() {
             method: "POST",
             body: JSON.stringify(payload)
         });
+        if (!res.ok) {
+            const err = await readApiError(res);
+            if (isUpgradeCode(err.code)) {
+                await refreshTrialStatus();
+                openWaitlistModal(err.message);
+            } else {
+                showToast("Error creating novel: " + err.message, "error");
+            }
+            return;
+        }
         const novel = await res.json();
         showToast("Novel initiated! Directing story matrix...", "success");
+        refreshTrialStatus();
         openNovel(novel.novel_id);
     } catch (e) {
         showToast("Error creating novel: " + e.message, "error");
@@ -743,6 +764,11 @@ async function refreshNovelView() {
                     </svg>
                     <span>Novel Completed (${writtenCount} Chapters)</span>
                 `;
+            } else if (isNovelLockedByTrial(currentNovel)) {
+                // The click still goes to the server, which refuses and explains the upgrade path.
+                btnWrite.disabled = false;
+                btnWrite.style.opacity = "1";
+                btnWrite.innerHTML = `${ICONS.lock}<span>Upgrade to Write More</span>`;
             } else {
                 btnWrite.disabled = false;
                 btnWrite.style.opacity = "1";
@@ -1018,6 +1044,15 @@ async function toggleNovelAutoContinue() {
             method: "POST",
             body: JSON.stringify({ auto_continue: newStatus })
         });
+        if (!res.ok) {
+            const err = await readApiError(res);
+            if (isUpgradeCode(err.code)) {
+                openWaitlistModal(err.message);
+            } else {
+                showToast(err.message, "error");
+            }
+            return;
+        }
         const data = await res.json();
         currentNovel.auto_continue = data.auto_continue;
         updateAutoContinueButtonUI(data.auto_continue);
@@ -1243,8 +1278,12 @@ async function triggerWriteNext() {
     try {
         const res = await fetchWithAuth(`/api/novels/${currentNovelId}/write-next`, { method: "POST" });
         if (!res.ok) {
-            const err = await res.json();
-            showToast(err.detail || "Error starting chapter generation", "error");
+            const err = await readApiError(res);
+            if (isUpgradeCode(err.code)) {
+                openWaitlistModal(err.message);
+            } else {
+                showToast(err.message || "Error starting chapter generation", "error");
+            }
             return;
         }
         const data = await res.json();
@@ -1261,7 +1300,11 @@ async function triggerWriteNext() {
 
 // Delete Novel
 async function confirmDeleteNovel() {
-    if (!confirm("Are you sure you want to permanently delete this novel and all chapters?")) return;
+    const isTrialNovel = isOnTrialPlan() && trialStatus.trial_novel_id === currentNovelId;
+    const message = isTrialNovel
+        ? "This is your free trial novel.\n\nDeleting it permanently uses up your one free trial: you will not be able to create another novel without an upgraded plan, and this cannot be undone.\n\nDelete it anyway?"
+        : "Are you sure you want to permanently delete this novel and all chapters?";
+    if (!confirm(message)) return;
     try {
         const res = await fetchWithAuth(`/api/novels/${currentNovelId}`, { method: "DELETE" });
         if (!res.ok) {
@@ -1362,6 +1405,15 @@ async function regenerateCurrentChapterArt() {
         const res = await fetchWithAuth(`/api/novels/${currentNovelId}/episodes/${currentEpisodeNumber}/generate-image`, {
             method: "POST"
         });
+        if (!res.ok) {
+            const err = await readApiError(res);
+            if (isUpgradeCode(err.code)) {
+                openWaitlistModal(err.message);
+            } else {
+                showToast(err.message, "error");
+            }
+            return;
+        }
         const data = await res.json();
         if (data.success) {
             const heroImg = document.getElementById("readerHeroImg");
@@ -1863,22 +1915,73 @@ async function loadAdminDashboard() {
 }
 
 function switchAdminTab(tab) {
-    const tabUsers = document.getElementById("tabBtnAdminUsers");
-    const tabAI = document.getElementById("tabBtnAdminAI");
-    const contentUsers = document.getElementById("adminTabUsersContent");
-    const contentAI = document.getElementById("adminTabAIContent");
+    const tabs = {
+        users: ["tabBtnAdminUsers", "adminTabUsersContent"],
+        ai: ["tabBtnAdminAI", "adminTabAIContent"],
+        waitlist: ["tabBtnAdminWaitlist", "adminTabWaitlistContent"]
+    };
+    if (!tabs[tab]) tab = "ai";
+    for (const [name, [btnId, contentId]] of Object.entries(tabs)) {
+        const btn = document.getElementById(btnId);
+        const content = document.getElementById(contentId);
+        if (btn) btn.className = (name === tab) ? "tab-btn active" : "tab-btn";
+        if (content) content.style.display = (name === tab) ? "block" : "none";
+    }
+    if (tab === "ai") loadAdminAiConfig();
+    if (tab === "waitlist") loadAdminWaitlist();
+}
 
-    if (tab === "users") {
-        if (tabUsers) tabUsers.className = "tab-btn active";
-        if (tabAI) tabAI.className = "tab-btn";
-        if (contentUsers) contentUsers.style.display = "block";
-        if (contentAI) contentAI.style.display = "none";
-    } else {
-        if (tabUsers) tabUsers.className = "tab-btn";
-        if (tabAI) tabAI.className = "tab-btn active";
-        if (contentUsers) contentUsers.style.display = "none";
-        if (contentAI) contentAI.style.display = "block";
-        loadAdminAiConfig();
+async function loadAdminWaitlist() {
+    const tbody = document.getElementById("adminWaitlistTableBody");
+    const count = document.getElementById("adminWaitlistCount");
+    if (!tbody) return;
+    tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-tertiary); padding: 36px;">Loading waitlist…</td></tr>`;
+    try {
+        const res = await fetchWithAuth("/api/admin/waitlist");
+        if (!res.ok) {
+            const err = await readApiError(res);
+            tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger); padding: 36px;">Could not load the waitlist: ${escapeHtml(err.message)}</td></tr>`;
+            return;
+        }
+        const entries = await res.json();
+        if (count) count.innerText = entries.length.toLocaleString();
+        if (entries.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--text-tertiary); padding: 36px;">Nobody has joined the waitlist yet.</td></tr>`;
+            return;
+        }
+        tbody.innerHTML = entries.map(e => {
+            const dateStr = e.created_at ? new Date(e.created_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : "";
+            return `
+                <tr>
+                    <td style="font-weight: 700; color: var(--text-primary);">${escapeHtml(e.email)}</td>
+                    <td style="font-size: 0.88rem; color: var(--text-secondary);">${escapeHtml(e.full_name || e.username || "Deleted account")}${e.username ? ` · @${escapeHtml(e.username)}` : ""}</td>
+                    <td style="font-size: 0.85rem; color: var(--text-secondary);">${escapeHtml(dateStr)}</td>
+                    <td style="text-align: right;">
+                        <button class="table-action-btn danger" title="Remove from waitlist" data-entry-id="${escapeHtml(e.id)}" onclick="deleteAdminWaitlistEntry(this.dataset.entryId)">
+                            ${ICONS.trash}
+                        </button>
+                    </td>
+                </tr>
+            `;
+        }).join("");
+    } catch (e) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align: center; color: var(--danger); padding: 36px;">Could not load the waitlist. Check your connection and try again.</td></tr>`;
+    }
+}
+
+async function deleteAdminWaitlistEntry(entryId) {
+    if (!entryId || !confirm("Remove this person from the waitlist? Their stored email will be deleted.")) return;
+    try {
+        const res = await fetchWithAuth(`/api/admin/waitlist/${encodeURIComponent(entryId)}`, { method: "DELETE" });
+        if (!res.ok) {
+            const err = await readApiError(res);
+            showToast(err.message, "error");
+            return;
+        }
+        showToast("Removed from the waitlist.", "success");
+        loadAdminWaitlist();
+    } catch (e) {
+        showToast("Could not remove the entry. Please try again.", "error");
     }
 }
 
@@ -2714,3 +2817,269 @@ function applyQlooScenarioIndex(index) {
 }
 
 
+
+// ==================== FREE TRIAL STATUS & UPGRADE WAITLIST ====================
+
+const UPGRADE_CODES = ["trial_used", "trial_limit", "novel_locked"];
+
+function isUpgradeCode(code) {
+    return UPGRADE_CODES.includes(code);
+}
+
+// Normalises FastAPI error bodies: string detail, {code, message} detail, or validation arrays.
+async function readApiError(res) {
+    let body = null;
+    try {
+        body = await res.json();
+    } catch (_) {}
+    const detail = body ? body.detail : null;
+    if (detail && typeof detail === "object" && !Array.isArray(detail)) {
+        return { code: detail.code || null, message: detail.message || "Request failed." };
+    }
+    if (Array.isArray(detail)) {
+        return { code: null, message: detail.map(d => d.msg).filter(Boolean).join("; ") || "Request failed." };
+    }
+    return { code: null, message: (typeof detail === "string" && detail) ? detail : `Request failed (${res.status}).` };
+}
+
+function isOnTrialPlan() {
+    return !!(currentUser && trialStatus && trialStatus.plan === "trial");
+}
+
+function isTrialUsed() {
+    return isOnTrialPlan() && trialStatus.trial_used;
+}
+
+function isNovelLockedByTrial(novel) {
+    if (!isOnTrialPlan() || !novel || novel.owner_id !== currentUser.id) return false;
+    return novel.novel_id !== trialStatus.trial_novel_id;
+}
+
+async function refreshTrialStatus() {
+    if (!currentUser) {
+        trialStatus = null;
+    } else {
+        try {
+            const res = await fetchWithAuth("/api/trial/status");
+            trialStatus = res.ok ? await res.json() : null;
+        } catch (e) {
+            trialStatus = null;
+        }
+    }
+    renderTrialBanner();
+    return trialStatus;
+}
+
+function describeTrialStatus() {
+    const s = trialStatus;
+    if (!s || s.plan !== "trial") return "";
+    const allowance = `one novel of up to ${s.chapters_limit} chapters, about ${s.max_words_per_chapter.toLocaleString()} words each`;
+    if (s.trial_available) {
+        return `<strong>Free trial available.</strong> It covers ${allowance}, and starts when you create your novel. Each account gets one trial.`;
+    }
+    if (!s.trial_exhausted) {
+        return `<strong>Free trial in progress.</strong> ${s.chapters_written} of ${s.chapters_limit} chapters written in your trial novel. Each account gets one trial, so a second novel needs an upgraded plan.`;
+    }
+    const why = s.trial_novel_exists
+        ? `All ${s.chapters_limit} chapters of your trial novel are written.`
+        : "Your trial novel was deleted, and a trial can't be restarted.";
+    return `<strong>Your free trial is used up.</strong> ${why} You can still read everything you've written, but new novels and extra chapters need an upgraded plan.`;
+}
+
+function renderTrialBanner() {
+    const banner = document.getElementById("trialBanner");
+    if (!banner) return;
+    if (!isOnTrialPlan()) {
+        banner.style.display = "none";
+        banner.innerHTML = "";
+        return;
+    }
+    const s = trialStatus;
+    const action = s.waitlist_joined
+        ? `<button class="btn btn-ghost btn-sm" onclick="openWaitlistModal()">${ICONS.check} On the waitlist</button>`
+        : `<button class="btn ${s.trial_exhausted ? "btn-primary" : "btn-secondary"} btn-sm" onclick="openWaitlistModal()">Join the upgrade waitlist</button>`;
+    banner.className = "trial-banner" + (s.trial_exhausted ? " trial-banner-warn" : "");
+    banner.innerHTML = `<div class="trial-banner-text">${describeTrialStatus()}</div>${action}`;
+    banner.style.display = "flex";
+}
+
+// Caps the wizard's size controls to the trial allowance. The server enforces the same limits.
+function applyTrialLimitsToWizard() {
+    const countInput = document.getElementById("wizEpisodesCount");
+    const wordsSelect = document.getElementById("wizWordsPerEpisode");
+    const hint = document.getElementById("wizTrialHint");
+    const onTrial = isOnTrialPlan();
+    const maxChapters = onTrial ? trialStatus.chapters_limit : 15;
+    const maxWords = onTrial ? trialStatus.max_words_per_chapter : Infinity;
+
+    if (countInput) {
+        countInput.max = String(maxChapters);
+        if ((parseInt(countInput.value) || 0) > maxChapters) countInput.value = String(maxChapters);
+    }
+    if (wordsSelect) {
+        // The preset options stop below the trial allowance, so offer the allowance itself
+        // rather than silently capping the author lower than the banner promises.
+        Array.from(wordsSelect.querySelectorAll("option[data-trial-option]")).forEach(o => o.remove());
+        if (onTrial && !Array.from(wordsSelect.options).some(o => parseInt(o.value) === maxWords)) {
+            const opt = document.createElement("option");
+            opt.value = String(maxWords);
+            opt.textContent = `Trial maximum (~${maxWords.toLocaleString()} words)`;
+            opt.setAttribute("data-trial-option", "1");
+            wordsSelect.appendChild(opt);
+        }
+        let bestAllowed = null;
+        Array.from(wordsSelect.options).forEach(opt => {
+            opt.disabled = parseInt(opt.value) > maxWords;
+            if (!opt.disabled && (bestAllowed === null || parseInt(opt.value) > parseInt(bestAllowed))) {
+                bestAllowed = opt.value;
+            }
+        });
+        if (wordsSelect.selectedOptions[0] && wordsSelect.selectedOptions[0].disabled && bestAllowed !== null) {
+            wordsSelect.value = bestAllowed;
+        }
+    }
+    if (hint) {
+        if (onTrial) {
+            hint.innerHTML = `<div class="trial-banner-text"><strong>Free trial novel.</strong> Up to ${maxChapters} chapters and about ${maxWords.toLocaleString()} words per chapter. Longer novels need an upgraded plan.</div><button type="button" class="btn btn-ghost btn-sm" onclick="openWaitlistModal()">Join the upgrade waitlist</button>`;
+            hint.style.display = "flex";
+        } else {
+            hint.style.display = "none";
+        }
+    }
+}
+
+function setWaitlistError(message) {
+    const box = document.getElementById("waitlistError");
+    const input = document.getElementById("waitlistEmail");
+    if (box) {
+        box.innerText = message || "";
+        box.style.display = message ? "block" : "none";
+    }
+    if (input) input.classList.toggle("input-invalid", !!message);
+}
+
+function showWaitlistForm() {
+    document.getElementById("waitlistForm").style.display = "block";
+    document.getElementById("waitlistJoined").style.display = "none";
+    const btn = document.getElementById("btnWaitlistSubmit");
+    if (btn) btn.innerText = (trialStatus && trialStatus.waitlist_joined) ? "Update email" : "Join the waitlist";
+    setWaitlistError("");
+    const input = document.getElementById("waitlistEmail");
+    if (input) input.focus();
+}
+
+function showWaitlistJoined(email) {
+    document.getElementById("waitlistForm").style.display = "none";
+    document.getElementById("waitlistJoined").style.display = "block";
+    document.getElementById("waitlistJoinedEmail").innerText = email || "";
+}
+
+// `reason` explains a blocked action (plain text from the server); omit it when opened from a menu.
+async function openWaitlistModal(reason) {
+    const dropdown = document.getElementById("userDropdownMenu");
+    if (dropdown) dropdown.classList.remove("show");
+    if (!currentUser) {
+        openAuthModal("login");
+        return;
+    }
+    const reasonBox = document.getElementById("waitlistReason");
+    if (reasonBox) {
+        reasonBox.innerText = (typeof reason === "string") ? reason : "";
+        reasonBox.style.display = (typeof reason === "string" && reason) ? "flex" : "none";
+    }
+    const summary = document.getElementById("waitlistTrialSummary");
+    const input = document.getElementById("waitlistEmail");
+    if (input) input.value = currentUser.email || "";
+    setWaitlistError("");
+    document.getElementById("waitlistModal").style.display = "flex";
+
+    await refreshTrialStatus();
+    if (summary) {
+        summary.innerHTML = isOnTrialPlan()
+            ? describeTrialStatus()
+            : "Your account has unlimited access, so no upgrade is needed.";
+    }
+
+    let entry = null;
+    try {
+        const res = await fetchWithAuth("/api/waitlist/me");
+        if (res.ok) entry = await res.json();
+    } catch (_) {}
+    if (entry && entry.joined) {
+        if (input) input.value = entry.email;
+        showWaitlistJoined(entry.email);
+    } else {
+        showWaitlistForm();
+    }
+}
+
+function closeWaitlistModal() {
+    const modal = document.getElementById("waitlistModal");
+    if (modal) modal.style.display = "none";
+}
+
+async function handleWaitlistSubmit(event) {
+    event.preventDefault();
+    const input = document.getElementById("waitlistEmail");
+    const btn = document.getElementById("btnWaitlistSubmit");
+    const email = input.value.trim();
+
+    if (!email) {
+        setWaitlistError("Please enter an email address.");
+        return;
+    }
+    if (!input.checkValidity()) {
+        setWaitlistError("Please enter a valid email address, like name@example.com.");
+        return;
+    }
+    setWaitlistError("");
+
+    const oldText = btn.innerText;
+    btn.disabled = true;
+    btn.innerText = "Saving…";
+    try {
+        const res = await fetchWithAuth("/api/waitlist", {
+            method: "POST",
+            body: JSON.stringify({ email })
+        });
+        if (!res.ok) {
+            const err = await readApiError(res);
+            setWaitlistError(res.status === 401 ? "Your session expired. Please sign in and try again." : err.message);
+            return;
+        }
+        const data = await res.json();
+        showWaitlistJoined(data.email);
+        showToast(data.message, "success");
+        if (trialStatus) trialStatus.waitlist_joined = true;
+        renderTrialBanner();
+    } catch (e) {
+        setWaitlistError("We couldn't reach the server, so you have not been added yet. Check your connection and try again.");
+    } finally {
+        btn.disabled = false;
+        btn.innerText = oldText;
+    }
+}
+
+async function handleWaitlistLeave() {
+    if (!confirm("Leave the waitlist? We'll delete your notification email and won't contact you about upgraded plans.")) return;
+    const btn = document.getElementById("btnWaitlistLeave");
+    if (btn) btn.disabled = true;
+    try {
+        const res = await fetchWithAuth("/api/waitlist/me", { method: "DELETE" });
+        if (!res.ok) {
+            const err = await readApiError(res);
+            showToast(err.message, "error");
+            return;
+        }
+        if (trialStatus) trialStatus.waitlist_joined = false;
+        renderTrialBanner();
+        const input = document.getElementById("waitlistEmail");
+        if (input) input.value = currentUser ? currentUser.email : "";
+        showWaitlistForm();
+        showToast("You've left the waitlist.", "info");
+    } catch (e) {
+        showToast("Could not leave the waitlist. Please try again.", "error");
+    } finally {
+        if (btn) btn.disabled = false;
+    }
+}

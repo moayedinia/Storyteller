@@ -5,7 +5,9 @@ from typing import List, Optional
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Response, Depends
 from pydantic import BaseModel
 from app.api.deps import get_current_user_optional, get_current_user
+from app.api.trial import upgrade_required, require_generation_allowed, get_generation_denial
 from app.storage.users import User
+from app.storage.trial import trial_manager
 
 from app.models.blueprint import (
     CreateNovelRequest, StoryBlueprint, NovelSummary,
@@ -192,6 +194,21 @@ async def create_novel(req: CreateNovelRequest, background_tasks: BackgroundTask
         owner_id = "usr_admin001"
         owner_name = "Master Author"
 
+    # Regular authors create novels through their one free trial, within the trial allowance.
+    on_trial = isinstance(user, User) and not trial_manager.is_exempt_role(user.role)
+    total_episodes = req.total_episodes or 5
+    words_per_episode = req.words_per_episode or 1500
+    if on_trial:
+        asked_episodes = req.total_episodes if "total_episodes" in req.model_fields_set else None
+        asked_words = req.words_per_episode if "words_per_episode" in req.model_fields_set else None
+        # Eligibility first: a spent trial is the real reason, whatever size was asked for.
+        if trial_manager.get_status(user.id, user.role).trial_used:
+            raise upgrade_required(trial_manager.trial_used_denial())
+        denial = trial_manager.check_new_novel_limits(asked_episodes, asked_words)
+        if denial:
+            raise upgrade_required(denial)
+        total_episodes = asked_episodes or trial_manager.max_episodes
+        words_per_episode = asked_words or trial_manager.max_words_per_episode
 
 
     chars = []
@@ -223,8 +240,8 @@ async def create_novel(req: CreateNovelRequest, background_tasks: BackgroundTask
         novel_id=novel_id,
         title=req.title or "New Novel",
         premise=req.premise or "",
-        total_episodes=req.total_episodes or 5,
-        words_per_episode=req.words_per_episode or 1500,
+        total_episodes=total_episodes,
+        words_per_episode=words_per_episode,
         auto_continue=bool(req.auto_continue),
         status=NovelStatus.DRAFT.value,
         created_at_utc=now,
@@ -256,7 +273,15 @@ async def create_novel(req: CreateNovelRequest, background_tasks: BackgroundTask
         )
     )
 
-    store.save_blueprint(blueprint)
+    # Consume the trial atomically: of any concurrent requests, exactly one wins the claim.
+    if on_trial and not trial_manager.claim_trial(user.id, novel_id):
+        raise upgrade_required(trial_manager.trial_used_denial())
+    try:
+        store.save_blueprint(blueprint)
+    except Exception:
+        if on_trial:
+            trial_manager.release_trial(user.id, novel_id)
+        raise
 
     if req.start_now:
         task = asyncio.create_task(initialize_novel(blueprint))
@@ -320,6 +345,10 @@ async def get_progress(novel_id: str, user: Optional[User] = Depends(get_current
 async def toggle_auto_continue(novel_id: str, req: SetAutoContinueRequest, user: User = Depends(get_current_user)):
     """Toggle auto-continue mode (author or admin only)."""
     bp = check_novel_access(novel_id, user)
+    if req.auto_continue:
+        next_ep = len(store.list_episodes(novel_id)) + 1
+        if next_ep <= bp.total_episodes:
+            require_generation_allowed(bp, next_ep)
     bp.auto_continue = req.auto_continue
     store.save_blueprint(bp)
 
@@ -358,6 +387,8 @@ async def write_next_episode(novel_id: str, user: User = Depends(get_current_use
     next_ep = written + 1
     if next_ep > bp.total_episodes:
         raise HTTPException(status_code=400, detail="All episodes for this novel have already been generated")
+
+    require_generation_allowed(bp, next_ep)
 
     if not is_model_configured():
         await update_progress(
@@ -421,6 +452,13 @@ async def get_episode_image(novel_id: str, episode_number: int, user: Optional[U
     if not ep:
         raise HTTPException(status_code=404, detail="Episode or novel not found")
 
+    # Outside the owner's entitlement, keep the chapter readable without spending model
+    # capacity: render local thematic vector art and do not persist it, so real artwork
+    # can still be generated if the account is upgraded later.
+    if get_generation_denial(bp, episode_number):
+        svg = chapter_image_client.generate_thematic_svg(bp, ep)
+        return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
+
     data, mime_type, prompt = await chapter_image_client.generate(bp, ep)
     store.save_episode_image(novel_id, episode_number, data, mime_type)
     ep.image_url = f"/api/novels/{novel_id}/episodes/{episode_number}/image"
@@ -436,6 +474,7 @@ async def generate_episode_image(novel_id: str, episode_number: int, user: User 
     ep = store.get_episode(novel_id, episode_number)
     if not ep:
         raise HTTPException(status_code=404, detail="Episode or novel not found")
+    require_generation_allowed(bp, episode_number)
 
     data, mime_type, prompt = await chapter_image_client.generate(bp, ep)
     store.save_episode_image(novel_id, episode_number, data, mime_type)

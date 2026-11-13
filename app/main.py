@@ -9,6 +9,8 @@ from app.api.novels import router as novels_router
 from app.api.system import router as system_router
 from app.api.auth import router as auth_router
 from app.api.admin import router as admin_router
+from app.api.trial import router as trial_router
+from app.api.waitlist import router as waitlist_router
 
 app = FastAPI(
     title=settings.app_name,
@@ -29,6 +31,8 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(novels_router)
 app.include_router(system_router)
+app.include_router(trial_router)
+app.include_router(waitlist_router)
 
 # Static Files
 static_dir = os.path.join(os.path.dirname(__file__), "static")

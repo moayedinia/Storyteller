@@ -1341,3 +1341,52 @@ h1, h2, h3, h4, h5 {
 
 
 
+
+/* Free Trial Status & Upgrade Waitlist */
+.trial-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 14px 18px;
+    margin-bottom: 24px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-accent);
+    background: var(--accent-subtle);
+    color: var(--text-primary);
+    font-size: 0.92rem;
+    line-height: 1.5;
+}
+
+.trial-banner-info {
+    border-radius: var(--radius-sm);
+}
+
+.trial-banner-warn {
+    border-color: var(--gold);
+    background: var(--gold-subtle);
+    border-radius: var(--radius-sm);
+}
+
+.trial-banner-success {
+    border-color: var(--success);
+    background: var(--success-subtle);
+    border-radius: var(--radius-sm);
+}
+
+.trial-banner .trial-banner-text {
+    flex: 1;
+    min-width: 220px;
+}
+
+.form-error {
+    margin-top: 6px;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: var(--danger);
+}
+
+.form-input.input-invalid {
+    border-color: var(--danger);
+}

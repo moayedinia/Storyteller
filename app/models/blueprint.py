@@ -103,7 +103,7 @@ class CreateNovelRequest(BaseModel):
     locations: Optional[List[LocationSeed]] = None
     characters: Optional[List[CharacterSeed]] = None
     relationships: Optional[List[RelationshipSeed]] = None
-    total_episodes: Optional[int] = 4
+    total_episodes: Optional[int] = Field(4, ge=1, le=50)
     words_per_episode: Optional[int] = Field(1800, ge=500, le=3000)
     perspective: Optional[str] = Perspective.THIRD_PERSON_LIMITED.value
     ending: Optional[str] = EndingType.SURPRISING.value

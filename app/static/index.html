@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Storyteller AI · Autonomous Multi-Agent Novel Studio</title>
-    <link rel="stylesheet" href="/static/app.css?v=2.2">
+    <link rel="stylesheet" href="/static/app.css?v=2.3">
     <script>
         // Early router fallback so navigation clicks never fail even before full script load
         window.navigateTo = window.navigateTo || function(viewName) {
@@ -111,6 +111,12 @@
                             </svg>
                             My Profile & Stats
                         </button>
+                        <button class="dropdown-item" id="dropdownPlanLink" onclick="openWaitlistModal()">
+                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+                            </svg>
+                            Plan & Upgrade Waitlist
+                        </button>
                         <button class="dropdown-item" id="dropdownAdminLink" style="display: none;" onclick="navigateTo('admin')">
                             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <rect x="3" y="3" width="7" height="7"></rect>
@@ -163,6 +169,9 @@
                     </button>
                 </div>
             </div>
+
+            <!-- Free trial status (rendered for signed-in authors) -->
+            <div id="trialBanner" class="trial-banner" style="display: none;" role="status" aria-live="polite"></div>
 
             <!-- Novel Cards Grid -->
             <div id="novelsGrid" class="novel-grid">
@@ -737,6 +746,7 @@
 
                 <!-- Wizard Step 4: Structure & Launch -->
                 <div id="wizardStep4" style="display: none;">
+                    <div id="wizTrialHint" class="trial-banner trial-banner-info" style="display: none; margin-bottom: 18px;"></div>
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
                         <div class="form-group">
                             <label class="form-label">Total Planned Chapters</label>
@@ -1176,6 +1186,13 @@
                         </svg>
                         Global AI API & Models
                     </button>
+                    <button class="tab-btn" id="tabBtnAdminWaitlist" onclick="switchAdminTab('waitlist')">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"></path>
+                            <polyline points="22,6 12,13 2,6"></polyline>
+                        </svg>
+                        Upgrade Waitlist
+                    </button>
                 </div>
 
                 <!-- Admin Tab 1: Users List -->
@@ -1201,6 +1218,29 @@
                                 </tr>
                             </thead>
                             <tbody id="adminUsersTableBody">
+                                <!-- Populated dynamically -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Admin Tab 3: Upgrade Waitlist -->
+                <div id="adminTabWaitlistContent" style="padding: 24px; display: none;">
+                    <div style="margin-bottom: 20px;">
+                        <h3 style="font-size: 1.15rem; font-weight: 700;">Upgrade Waitlist <span id="adminWaitlistCount" class="badge badge-role-author" style="margin-left: 6px;">0</span></h3>
+                        <p style="font-size: 0.88rem; color: var(--text-tertiary);">Authors who asked to be emailed when upgraded plans open, oldest first. Visible to administrators only.</p>
+                    </div>
+                    <div class="admin-table-container">
+                        <table class="admin-table">
+                            <thead>
+                                <tr>
+                                    <th>Notification Email</th>
+                                    <th>Account</th>
+                                    <th>Joined</th>
+                                    <th style="text-align: right;">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="adminWaitlistTableBody">
                                 <!-- Populated dynamically -->
                             </tbody>
                         </table>
@@ -1629,6 +1669,61 @@
 
 
 
+    <!-- ==================== PLAN & UPGRADE WAITLIST MODAL ==================== -->
+    <div id="waitlistModal" class="modal-overlay" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="waitlistModalTitle">
+        <div class="modal-box" style="max-width: 480px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+                <h3 id="waitlistModalTitle" style="font-size: 1.3rem; font-weight: 800;">Plan & Upgrade Waitlist</h3>
+                <button class="btn btn-ghost btn-sm" onclick="closeWaitlistModal()" aria-label="Close">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"></line>
+                        <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Why the author is seeing this (set when an action was blocked) -->
+            <div id="waitlistReason" class="trial-banner trial-banner-warn" style="display: none; margin-bottom: 16px;"></div>
+
+            <!-- Current trial status -->
+            <div id="waitlistTrialSummary" style="font-size: 0.92rem; color: var(--text-secondary); line-height: 1.55; margin-bottom: 16px;"></div>
+
+            <!-- Join form -->
+            <form id="waitlistForm" onsubmit="handleWaitlistSubmit(event)" novalidate>
+                <p style="font-size: 0.92rem; color: var(--text-secondary); line-height: 1.55; margin-bottom: 16px;">
+                    Upgraded plans are not open yet, so there is nothing to pay for today. Join the waitlist and we will email you when they open. Joining is free and does not change your trial.
+                </p>
+                <div class="form-group">
+                    <label class="form-label" for="waitlistEmail">Email to notify</label>
+                    <input type="email" id="waitlistEmail" class="form-input" placeholder="name@example.com" autocomplete="email" maxlength="254" required aria-describedby="waitlistError waitlistPrivacy">
+                    <div id="waitlistError" class="form-error" role="alert" style="display: none;"></div>
+                    <div id="waitlistPrivacy" class="form-hint">We only use this address to tell you about upgraded plans. You can leave the waitlist at any time.</div>
+                </div>
+                <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+                    <button type="button" class="btn btn-ghost" onclick="closeWaitlistModal()">Not now</button>
+                    <button type="submit" id="btnWaitlistSubmit" class="btn btn-primary">Join the waitlist</button>
+                </div>
+            </form>
+
+            <!-- Joined state -->
+            <div id="waitlistJoined" style="display: none;">
+                <div class="trial-banner trial-banner-success" style="margin-bottom: 16px;">
+                    <div>
+                        <strong>You're on the waitlist.</strong>
+                        <div style="margin-top: 4px;">We will email <strong id="waitlistJoinedEmail"></strong> when upgraded plans open. There is nothing else you need to do.</div>
+                    </div>
+                </div>
+                <div style="display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap;">
+                    <div style="display: flex; gap: 8px;">
+                        <button type="button" class="btn btn-ghost btn-sm" onclick="showWaitlistForm()">Use a different email</button>
+                        <button type="button" id="btnWaitlistLeave" class="btn btn-ghost btn-sm" onclick="handleWaitlistLeave()">Leave the waitlist</button>
+                    </div>
+                    <button type="button" class="btn btn-primary" onclick="closeWaitlistModal()">Done</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- ==================== ADMIN RESET USER PASSWORD MODAL ==================== -->
     <div id="adminResetPwdModal" class="modal-overlay" style="display: none;">
         <div class="modal-box" style="max-width: 420px;">
@@ -1668,6 +1763,6 @@
         <span>Help & Guide</span>
     </button>
 
-    <script src="/static/app.js?v=2.4"></script>
+    <script src="/static/app.js?v=2.5"></script>
 </body>
 </html>

@@ -8,6 +8,7 @@ from app.models.episode import EpisodeResponse, GenerationProgress
 from app.models.simulation import StoryMemory
 from app.models.enums import NovelStatus
 from app.storage.store import store
+from app.storage.trial import trial_manager
 from app.engine.llm_client import llm
 from app.engine.stage1_world_cast import execute_stage1
 from app.engine.stage2_matrix import execute_stage2
@@ -90,6 +91,18 @@ async def update_progress(
         current_preview=preview
     )
     store.save_progress(p)
+
+async def halt_for_trial_limit(blueprint: StoryBlueprint, ep_num: int, message: str):
+    """Stops generation cleanly when a chapter falls outside the owner's free trial allowance."""
+    blueprint.auto_continue = False
+    if blueprint.status in (NovelStatus.WRITING.value, NovelStatus.DESIGNING.value):
+        blueprint.status = NovelStatus.READY.value
+    store.save_blueprint(blueprint)
+    await update_progress(
+        blueprint.novel_id, "Free trial limit reached", 6, 6, 0, ep_num, blueprint.total_episodes,
+        is_active=False,
+        log_line=f"🔒 {message}"
+    )
 
 async def initialize_novel(blueprint: StoryBlueprint):
     """Initializes the world, characters, and story matrix."""
@@ -189,6 +202,12 @@ async def generate_single_episode(novel_id: str, ep_num: int) -> Optional[Episod
     prior_episodes = store.list_episodes(novel_id)
 
     try:
+        # Server-side entitlement check: covers every caller, including the background auto-continue loop.
+        denial = trial_manager.check_episode_allowed(novel_id, blueprint.owner_id, ep_num)
+        if denial:
+            await halt_for_trial_limit(blueprint, ep_num, denial.message)
+            return None
+
         if not is_model_configured():
             blueprint.status = NovelStatus.READY.value
             store.save_blueprint(blueprint)
@@ -370,6 +389,14 @@ async def run_novel_episodes(novel_id: str):
 
             written = len(store.list_episodes(novel_id))
             next_ep = written + 1
+
+            # Entitlement comes first so a locked novel is never reported as merely queued.
+            if next_ep <= blueprint.total_episodes:
+                denial = trial_manager.check_episode_allowed(novel_id, blueprint.owner_id, next_ep)
+                if denial:
+                    await halt_for_trial_limit(blueprint, next_ep, denial.message)
+                    break
+
             if not is_model_configured():
                 blueprint.auto_continue = False
                 blueprint.status = NovelStatus.READY.value

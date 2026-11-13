@@ -4,10 +4,13 @@ import uuid
 import secrets
 import hashlib
 import hmac
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from app.storage.database import db
+
+logger = logging.getLogger(__name__)
 
 class User(BaseModel):
     id: str = Field(default_factory=lambda: f"usr_{uuid.uuid4().hex[:10]}")
@@ -25,6 +28,8 @@ class User(BaseModel):
     favorite_books: List[str] = Field(default_factory=list)
     favorite_movies: List[str] = Field(default_factory=list)
     cultural_taste: Dict[str, Any] = Field(default_factory=dict)
+    trial_novel_id: Optional[str] = None
+    trial_started_at: Optional[str] = None
 
 class UserPublic(BaseModel):
     id: str
@@ -128,11 +133,9 @@ class UserManager:
             admin_count = cursor.fetchone()[0]
             if admin_count == 0:
                 initial_pwd = os.environ.get("STORYTELLER_ADMIN_PASSWORD") or os.environ.get("ADMIN_INITIAL_PASSWORD")
-                if not initial_pwd:
+                generated_pwd = not initial_pwd
+                if generated_pwd:
                     initial_pwd = secrets.token_urlsafe(12)
-                    logger.info(f"Initialized platform administrator. Initial admin password: {initial_pwd}")
-                else:
-                    logger.info("Initialized platform administrator using configured environment password.")
 
                 pwd_hash, salt = self._hash_password(initial_pwd)
                 admin_id = "usr_admin001"
@@ -154,6 +157,36 @@ class UserManager:
                     "System superuser managing AI models, API keys, and authors.",
                     now
                 ))
+
+                if generated_pwd:
+                    self._store_generated_admin_password(initial_pwd)
+                else:
+                    logger.warning("Initialized platform administrator 'admin' using the configured environment password.")
+
+    def _store_generated_admin_password(self, password: str):
+        """Writes a generated first-run admin password to an owner-only file and logs the path.
+
+        The password is deliberately kept out of the logs. If the file cannot be written the
+        password is logged as a last resort, so an operator is never locked out of a fresh install.
+        """
+        path = os.path.join(os.path.dirname(db.db_path), "initial_admin_password.txt")
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                os.write(fd, (password + "\n").encode("utf-8"))
+            finally:
+                os.close(fd)
+            logger.warning(
+                "Initialized platform administrator 'admin' with a generated password, written to %s. "
+                "Sign in, change it, then delete that file. Set STORYTELLER_ADMIN_PASSWORD to choose it yourself.",
+                path
+            )
+        except OSError as e:
+            logger.warning(
+                "Initialized platform administrator 'admin' with the generated password %s "
+                "(could not write %s: %s). Change this password after signing in.",
+                password, path, e
+            )
 
     def _dict_to_user(self, d: dict) -> User:
         """Helper to unpack JSON fields into structured list and dict attributes."""

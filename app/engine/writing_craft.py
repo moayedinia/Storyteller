@@ -7,7 +7,7 @@ Synthesizes instructions and automated quality gates from:
 """
 
 import re
-from typing import Tuple, List, Dict
+from typing import Any, Optional, Tuple, List, Dict
 
 BANNED_AI_WORDS_AND_PHRASES: List[str] = [
     "delve", "delving", "delved",

@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException, Depends, status
 from pydantic import BaseModel
 from app.storage.users import User, UserPublic, user_manager
 from app.storage.store import store
+from app.storage.waitlist import WaitlistAdminEntry, waitlist_manager
 from app.engine.llm_client import llm
 from app.engine.qloo_client import qloo_client
 from app.config import settings
@@ -119,6 +120,18 @@ async def delete_user(user_id: str, admin: User = Depends(get_current_admin)):
         return {"message": "User deleted successfully."}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/waitlist", response_model=List[WaitlistAdminEntry])
+async def list_waitlist(admin: User = Depends(get_current_admin)):
+    """List upgrade-waitlist entries, oldest first (administrators only)."""
+    return waitlist_manager.list_entries()
+
+@router.delete("/waitlist/{entry_id}")
+async def delete_waitlist_entry(entry_id: str, admin: User = Depends(get_current_admin)):
+    """Permanently remove a waitlist entry, e.g. to honour a deletion request."""
+    if not waitlist_manager.delete_entry(entry_id):
+        raise HTTPException(status_code=404, detail="Waitlist entry not found.")
+    return {"message": "Waitlist entry removed."}
 
 @router.get("/ai-config")
 async def get_ai_config(admin: User = Depends(get_current_admin)):
