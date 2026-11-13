@@ -123,6 +123,24 @@ def test_trial_endpoints_require_authentication(client):
     assert client.post("/api/novels", json=novel_payload()).status_code == 401
 
 
+def test_scenario_generation_requires_authentication(client, user):
+    """The Story Muse reaches the narrative model, so it must not be open to anonymous callers."""
+    body = {"books": ["Dune"], "movies": ["Alien"], "locations": []}
+    assert client.post("/api/novels/qloo-scenarios", json=body).status_code == 401
+    # A signed-in author is still served.
+    res = client.post("/api/novels/qloo-scenarios", json=body, headers=user.headers)
+    assert res.status_code == 200, res.text
+    assert "scenarios" in res.json()
+
+
+def test_scenario_generation_is_available_before_and_after_the_trial(client, user):
+    """Ideation is not chapter generation, so spending the trial must not lock it."""
+    body = {"books": ["Dune"], "movies": [], "locations": []}
+    assert client.post("/api/novels/qloo-scenarios", json=body, headers=user.headers).status_code == 200
+    create_trial_novel(client, user)
+    assert client.post("/api/novels/qloo-scenarios", json=body, headers=user.headers).status_code == 200
+
+
 # ---------- limit enforcement ----------
 
 def test_trial_novel_can_generate_within_allowance(client, user):

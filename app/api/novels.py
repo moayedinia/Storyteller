@@ -37,10 +37,13 @@ class QlooScenarioRequest(BaseModel):
     locations: List[str] = []
 
 @router.post("/qloo-scenarios")
-async def generate_qloo_scenarios_endpoint(req: QlooScenarioRequest):
+async def generate_qloo_scenarios_endpoint(req: QlooScenarioRequest, user: User = Depends(get_current_user)):
     """
     Discovers 5 cultural affinity matches via Qloo's taste graph,
     then synthesizes 3 rich, distinct book writing scenarios for the author.
+
+    Requires sign-in: this reaches the narrative model, so anonymous callers must not
+    be able to consume model capacity outside any account's entitlement.
     """
     return await generate_scenarios_from_tastes(
         books=req.books,

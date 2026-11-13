@@ -142,6 +142,7 @@ Every author account includes **one free trial**. Paid plans are not available y
 - After that, creating another novel, adding chapters beyond the allowance, or generating content for any other novel returns `403` with a machine-readable `detail`: `{"code": "trial_used" | "trial_limit" | "novel_locked", "message": "...", "upgrade_path": "waitlist"}`.
 - Novels that are not the account's trial novel (including novels created before this feature shipped) stay readable but cannot generate new chapters or regenerate artwork. Chapters of those novels that have no stored illustration are served locally rendered vector art instead, so they stay readable without spending model capacity; real artwork can still be generated after an upgrade.
 - Administrators, and novels owned by administrators, are not limited.
+- The Story Muse scenario generator (`POST /api/novels/qloo-scenarios`) reaches the narrative model, so it requires sign-in. It is ideation rather than chapter generation, so it is not metered against the trial and stays available once the trial is spent.
 - The same check runs inside the generation pipeline, so the background auto-continue loop stops at the allowance too.
 
 **Waitlist**
